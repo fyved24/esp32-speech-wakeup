@@ -3,7 +3,6 @@
 #include <driver/i2s.h>
 #include <esp_task_wdt.h>
 #include "I2SMicSampler.h"
-#include "ADCSampler.h"
 #include "I2SOutput.h"
 #include "config.h"
 #include "Application.h"
@@ -12,40 +11,26 @@
 #include "Speaker.h"
 #include "IndicatorLight.h"
 
-// i2s config for using the internal ADC
-i2s_config_t adcI2SConfig = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
-    .sample_rate = 16000,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_I2S_LSB,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 4,
-    .dma_buf_len = 64,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0};
-
 // i2s config for reading from both channels of I2S
 i2s_config_t i2sMemsConfigBothChannels = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = 16000,
+    .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = SAMPLE_RATE,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_MIC_CHANNEL,
-    .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_I2S),
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 4,
-    .dma_buf_len = 64,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0};
+    .dma_buf_count = 8,
+    .dma_buf_len = I2S_READ_LEN, // 单位是bits_per_sample
+
+    };
 
 // i2s microphone pins
 i2s_pin_config_t i2s_mic_pins = {
-    .bck_io_num = I2S_MIC_SERIAL_CLOCK,
-    .ws_io_num = I2S_MIC_LEFT_RIGHT_CLOCK,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = I2S_MIC_SERIAL_DATA};
+    .bck_io_num = INMP441_SCK_PIN, // BCLK
+    .ws_io_num = INMP441_WS_PIN,   // LRCL
+    .data_out_num = -1,            // not used (only for speakers)
+    .data_in_num = INMP441_SD_PIN  // DOUT
+    };
 
 // i2s speaker pins
 i2s_pin_config_t i2s_speaker_pins = {
@@ -79,43 +64,49 @@ void setup()
   // start up wifi
   // launch WiFi
   WiFi.mode(WIFI_STA);
+  Serial.print("Connecting to ");
+  Serial.println(WIFI_SSID);
+
   WiFi.begin(WIFI_SSID, WIFI_PSWD);
-  if (WiFi.waitForConnectResult() != WL_CONNECTED)
+  while ( WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("Connection Failed! Rebooting...");
-    delay(5000);
-    ESP.restart();
+      delay(500);
+      Serial.print(".");
   }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
   Serial.printf("Total heap: %d\n", ESP.getHeapSize());
   Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
 
   // startup SPIFFS for the wav files
+  Serial.println("before SPIFFS");
   SPIFFS.begin();
+  Serial.println("after SPIFFS");
   // make sure we don't get killed for our long running tasks
   esp_task_wdt_init(10, false);
+  Serial.println("after dog");
 
-  // start up the I2S input (from either an I2S microphone or Analogue microphone via the ADC)
-#ifdef USE_I2S_MIC_INPUT
   // Direct i2s input from INMP441 or the SPH0645
-  I2SSampler *i2s_sampler = new I2SMicSampler(i2s_mic_pins, false);
-#else
-  // Use the internal ADC
-  I2SSampler *i2s_sampler = new ADCSampler(ADC_UNIT_1, ADC_MIC_CHANNEL);
-#endif
+  I2SSampler *i2s_sampler = new I2SMicSampler(i2s_mic_pins);
+  Serial.println("after i2s_sampler");
 
   // start the i2s speaker output
   I2SOutput *i2s_output = new I2SOutput();
   i2s_output->start(I2S_NUM_1, i2s_speaker_pins);
   Speaker *speaker = new Speaker(i2s_output);
+  Serial.println("after speaker");
 
   // indicator light to show when we are listening
   IndicatorLight *indicator_light = new IndicatorLight();
+  Serial.println("after indicator_light");
 
   // and the intent processor
   IntentProcessor *intent_processor = new IntentProcessor(speaker);
   intent_processor->addDevice("kitchen", GPIO_NUM_5);
   intent_processor->addDevice("bedroom", GPIO_NUM_21);
-  intent_processor->addDevice("table", GPIO_NUM_23);
 
   // create our application
   Application *application = new Application(i2s_sampler, intent_processor, speaker, indicator_light);
